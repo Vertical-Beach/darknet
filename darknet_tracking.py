@@ -1,13 +1,16 @@
 from ctypes import *
-import random
-import os
-import cv2
-import time
-import darknet
 import argparse
+import json
+import os
+import random
+import time
 from threading import Thread, enumerate
 from queue import Queue
 
+import cv2
+import darknet
+import sort
+import numpy as np
 
 def parser():
     parser = argparse.ArgumentParser(description="YOLO Object Detection")
@@ -107,23 +110,17 @@ def convert4cropping(image, bbox):
     return bbox_cropping
 
 
-def video_capture(frame_queue, darknet_image_queue):
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_resized = cv2.resize(frame_rgb, (darknet_width, darknet_height),
-                                   interpolation=cv2.INTER_LINEAR)
-        frame_queue.put(frame)
-        img_for_detect = darknet.make_image(darknet_width, darknet_height, 3)
-        darknet.copy_image_from_bytes(img_for_detect, frame_resized.tobytes())
-        darknet_image_queue.put(img_for_detect)
-    cap.release()
+def video_capture(frame, frame_queue, darknet_image_queue):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_resized = cv2.resize(frame_rgb, (darknet_width, darknet_height),
+                                interpolation=cv2.INTER_LINEAR)
+    frame_queue.put(frame)
+    img_for_detect = darknet.make_image(darknet_width, darknet_height, 3)
+    darknet.copy_image_from_bytes(img_for_detect, frame_resized.tobytes())
+    darknet_image_queue.put(img_for_detect)
 
-import sort
-import numpy as np
-def inference(darknet_image_queue, detections_queue, fps_queue, tracked_queue):
+
+def inference(darknet_image_queue, detections_queue, fps_queue, tracked_queue, pedestrian_tracker, car_tracker):
     def convert(bbox, conf, classid):
         left_x, top_y, width, height = bbox
         right_x = left_x + width
@@ -131,14 +128,12 @@ def inference(darknet_image_queue, detections_queue, fps_queue, tracked_queue):
         # dummy = 9999999 #?
         dummy = 0 #?
         return [left_x, top_y, right_x, bottom_y, conf/100, dummy, classid]
-        # return [left_x/416, top_y/416, right_x/416, bottom_y/416, conf/100]
     
     def convert2(bbox):
         left_x, top_y, right_x, bottom_y = bbox
         width = right_x - left_x
         height = bottom_y - top_y
         return left_x, top_y, width, height
-        # return [left_x*416, top_y*416, width*416, height*416]
 
     def tracking(pedestrian_tracker, car_tracker, detections):
         ped_bboxes = []
@@ -154,29 +149,25 @@ def inference(darknet_image_queue, detections_queue, fps_queue, tracked_queue):
         print(ped_tracked_objects.shape)
         for tracked_ped in ped_tracked_objects:
             obj_id = tracked_ped[4]
-            tracked_objects.append(('pedestrian', obj_id, convert2(tracked_ped[0:4])))
+            tracked_objects.append(('Pedestrian', obj_id, convert2(tracked_ped[0:4])))
 
         for tracked_car in car_tracked_objects:
             obj_id = tracked_car[4]
-            tracked_objects.append(('car', obj_id, convert2(tracked_car[0:4])))
+            tracked_objects.append(('Car', obj_id, convert2(tracked_car[0:4])))
         
         return tracked_objects
 
-    pedestrian_tracker = sort.Sort()
-    car_tracker = sort.Sort()
-    while cap.isOpened():
-        darknet_image = darknet_image_queue.get()
-        prev_time = time.time()
-        detections = darknet.detect_image(network, class_names, darknet_image, thresh=args.thresh)
-        tracked_objects = tracking(pedestrian_tracker, car_tracker, detections)
-        detections_queue.put(detections)
-        tracked_queue.put(tracked_objects)
-        fps = int(1/(time.time() - prev_time))
-        fps_queue.put(fps)
-        print("FPS: {}".format(fps))
-        darknet.print_detections(detections, args.ext_output)
-        darknet.free_image(darknet_image)
-    cap.release()
+    darknet_image = darknet_image_queue.get()
+    prev_time = time.time()
+    detections = darknet.detect_image(network, class_names, darknet_image, thresh=args.thresh)
+    tracked_objects = tracking(pedestrian_tracker, car_tracker, detections)
+    detections_queue.put(detections)
+    tracked_queue.put(tracked_objects)
+    fps = int(1/(time.time() - prev_time))
+    fps_queue.put(fps)
+    print("FPS: {}".format(fps))
+    darknet.print_detections(detections, args.ext_output)
+    darknet.free_image(darknet_image)
 
 
 def drawing(frame_queue, detections_queue, fps_queue, tracked_queue):
@@ -208,44 +199,54 @@ def drawing(frame_queue, detections_queue, fps_queue, tracked_queue):
         return image
 
     random.seed(3)  # deterministic bbox colors
-    video = set_saved_video(cap, args.out_filename, (video_width, video_height))
-    video2 = set_saved_video(cap, args.out_filename2, (video_width, video_height))
-    while cap.isOpened():
-        frame = frame_queue.get()
-        detections = detections_queue.get()
-        tracked_objects = tracked_queue.get()
+    
+    def bbox_to_dict(frame2, tracked_objects):
+        res = {}
+        for label, obj_id, bbox in tracked_objects:
+            x1, y1, w, h = convert2original(frame2, bbox)
+            x2 = x1 + w
+            y2 = x2 + h
+            if label not in res:
+                res[label] = []
+            res[label].append({
+                "id": int(obj_id),
+                "box2d": [x1, y1, x2, y2]    
+            })
+        return res
 
-        fps = fps_queue.get()
-        detections_adjusted = []
-        tracked_adjusted = []
-        if frame is not None:
-            frame2 = frame.copy()
+    frame = frame_queue.get()
+    detections = detections_queue.get()
+    tracked_objects = tracked_queue.get()
+    frame_result = None
 
-            for label, confidence, bbox in detections:
-                bbox_adjusted = convert2original(frame, bbox)
-                detections_adjusted.append((str(label), confidence, bbox_adjusted))
-            image = darknet.draw_boxes(detections_adjusted, frame, class_colors)
+    fps = fps_queue.get()
+    detections_adjusted = []
+    tracked_adjusted = []
+    if frame is not None:
+        frame2 = frame.copy()
 
-            for label, obj_id, bbox in tracked_objects:
-                bbox_adjusted = convert2original(frame2, bbox)
-                tracked_adjusted.append((str(label), int(obj_id), bbox_adjusted))
-            image2 = draw_tracked_boxes(tracked_adjusted, frame2)
+        for label, confidence, bbox in detections:
+            bbox_adjusted = convert2original(frame, bbox)
+            detections_adjusted.append((str(label), confidence, bbox_adjusted))
+        image = darknet.draw_boxes(detections_adjusted, frame, class_colors)
 
-            if not args.dont_show:
-                cv2.imshow('Inference', image)
-                cv2.imshow('Tracking', image2)
-            if args.out_filename is not None:
-                video.write(image)
-                video2.write(image2)
-            if cv2.waitKey(fps) == 27:
-                break
-    cap.release()
-    video.release()
-    video2.release()
-    cv2.destroyAllWindows()
+        for label, obj_id, bbox in tracked_objects:
+            bbox_adjusted = convert2original(frame2, bbox)
+            tracked_adjusted.append((str(label), int(obj_id), bbox_adjusted))
+        frame_result = bbox_to_dict(frame2, tracked_objects)
+        image2 = draw_tracked_boxes(tracked_adjusted, frame2)
+
+        image_v = cv2.vconcat([image, image2])
+
+        if not args.dont_show:
+            resized = cv2.resize(image_v, None, fx=0.5, fy=0.5)
+            cv2.imshow('Inference/Tracking', resized)
+            cv2.waitKey(1)
+    return frame_result, image_v
 
 
 if __name__ == '__main__':
+
     frame_queue = Queue()
     darknet_image_queue = Queue(maxsize=1)
     detections_queue = Queue(maxsize=1)
@@ -253,6 +254,7 @@ if __name__ == '__main__':
     fps_queue = Queue(maxsize=1)
 
     args = parser()
+    json_filename = os.path.basename(args.input.replace('.mp4', '.json'))
     check_arguments_errors(args)
     network, class_names, class_colors = darknet.load_network(
             args.config_file,
@@ -265,7 +267,26 @@ if __name__ == '__main__':
     input_path = str2int(args.input)
     cap = cv2.VideoCapture(input_path)
     video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    Thread(target=video_capture, args=(frame_queue, darknet_image_queue)).start()
-    Thread(target=inference, args=(darknet_image_queue, detections_queue, fps_queue, tracked_queue)).start()
-    Thread(target=drawing, args=(frame_queue, detections_queue, fps_queue, tracked_queue)).start()
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))*2
+    
+    frame_results = []
+    video = set_saved_video(cap, args.out_filename, (video_width, video_height))
+    pedestrian_tracker = sort.Sort()
+    car_tracker = sort.Sort()
+    
+    while True:
+        ret, frame = cap.read()
+        if frame is None:
+            break
+        video_capture(frame, frame_queue, darknet_image_queue)
+        inference(darknet_image_queue, detections_queue, fps_queue, tracked_queue, pedestrian_tracker, car_tracker)
+        frame_result, image_v = drawing(frame_queue, detections_queue, fps_queue, tracked_queue)
+        frame_results.append(frame_result)
+        
+        if args.out_filename is not None:
+            video.write(image_v)
+    
+    open(json_filename, 'w').write(json.dumps(frame_results))
+    cap.release()
+    video.release()
+    cv2.destroyAllWindows()
