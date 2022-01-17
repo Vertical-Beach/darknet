@@ -1,0 +1,1 @@
+g++ -std=c++11 -fpermissive ../libdarknet.so src/*.cpp `pkg-config --libs --cflags opencv` -I ./include -I /usr/local/include/eigen3/
