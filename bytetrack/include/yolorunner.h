@@ -28,7 +28,11 @@ class YoloRunner{
     public:
     network net;
     int class_num;
-    public: YoloRunner(char* modelconfig_path, char* modelfile_path){
+    float nms_thresh;
+    float conf_thresh;
+    public: YoloRunner(char* modelconfig_path, char* modelfile_path, float nms_thresh, float conf_thresh){
+        this->nms_thresh = nms_thresh;
+        this->conf_thresh = conf_thresh;
         this->net = *load_network_custom(modelconfig_path, modelfile_path, 0, 1);
         layer l = net.layers[net.n - 1];
         this->class_num = l.classes;
@@ -40,9 +44,7 @@ class YoloRunner{
         vector<vector<Object>> detection_results(this->class_num);
 
         //param
-        float thresh = 0.5f;
         float hier_thresh = 0.5f;
-        float nms = 0.4f;
 
         //preprocess
         image im = Mat2Image(cvimg);
@@ -51,9 +53,9 @@ class YoloRunner{
         network_predict(net, resized.data);
         int nboxes;
         const int letter_box = 0; // keep ratio
-        detection *dets = get_network_boxes(&net, im.w, im.h, thresh, hier_thresh, 0, 1, &nboxes, letter_box);
+        detection *dets = get_network_boxes(&net, im.w, im.h, this->conf_thresh, hier_thresh, 0, 1, &nboxes, letter_box);
         //nms
-        do_nms_sort(dets, nboxes, this->class_num, nms);
+        do_nms_sort(dets, nboxes, this->class_num, this->nms_thresh);
 
         //remove negatives(cf. darknet.py)
         for(int i = 0; i < nboxes; i++){
