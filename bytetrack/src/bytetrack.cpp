@@ -6,6 +6,7 @@
 #include <float.h>
 #include <stdio.h>
 #include <vector>
+#include <fstream>
 #include <chrono>
 #include "BYTETracker.h"
 #include "yolorunner.h"
@@ -14,11 +15,21 @@
 #define YOLOV4_CONF_THRESH 0.1 // threshold of bounding box prob
 #define MIN_BOX_AREA 1024
 #define FPS 5
+
+Mat draw_detections(cv::Mat img, vector<vector<Object>> objects){
+    for(auto category_objects: objects){
+        for(auto obj: category_objects){
+            Scalar col(0, 255, 0);
+            rectangle(img, obj.rect, col, 2);
+        }
+    }
+    return img;
+}
 int main(int argc, char** argv)
 {
-    if (argc != 2)
+    if (argc != 3)
     {
-        fprintf(stderr, "Usage: %s [videopath]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [videopath] [resultpath]\n", argv[0]);
         return -1;
     }
 
@@ -36,8 +47,9 @@ int main(int argc, char** argv)
     long nFrame = static_cast<long>(cap.get(CV_CAP_PROP_FRAME_COUNT));
     cout << "Total frames: " << nFrame << endl;
 
-    VideoWriter writer("demo.mp4", CV_FOURCC('m', 'p', '4', 'v'), fps, Size(img_w, img_h));
+    VideoWriter writer("demo.mp4", CV_FOURCC('m', 'p', '4', 'v'), fps, Size(img_w, img_h*2));
 
+    ofstream ofs(argv[2]);
     Mat img;
     vector<BYTETracker> trackers(runner.class_num);
     for(int i = 0; i < runner.class_num; i++) trackers[i] = BYTETracker(fps, FPS);
@@ -56,6 +68,8 @@ int main(int argc, char** argv)
 			break;
 
         vector<vector<Object>> objects = runner.Run(img);
+        Mat img2 = img.clone();
+        img2 = draw_detections(img2, objects);
         for(int track_class = 0; track_class < runner.class_num; track_class++){
             auto class_objects = objects[track_class];
 
@@ -74,12 +88,19 @@ int main(int argc, char** argv)
                     putText(img, format("%d", output_stracks[i].track_id), Point(tlwh[0], tlwh[1] - 5),
                             0, 0.6, Scalar(0, 0, 255), 2, LINE_AA);
                     rectangle(img, Rect(tlwh[0], tlwh[1], tlwh[2], tlwh[3]), s, 2);
+                    ofs << num_frames-1 << " " << output_stracks[i].track_id << " " << track_class << " " << tlwh[0] << " " << tlwh[1] << " " << tlwh[2] << " " << tlwh[3] << endl;
                 }
             }
             putText(img, format("frame: %d fps: %d num: %d", num_frames, num_frames * 1000000 / total_ms, output_stracks.size()),
                     Point(0, 30), 0, 0.6, Scalar(0, 0, 255), 2, LINE_AA);
         }
-        writer.write(img);
+        Mat vstackimg(img.rows + img2.rows, img.cols, CV_8UC3);
+        Mat roi1(vstackimg, Rect(0, 0, img.cols, img.rows));
+        img.copyTo(roi1);
+        Mat roi2(vstackimg,Rect(0, img.rows, img2.cols, img2.rows));
+        img2.copyTo(roi2);
+
+        writer.write(vstackimg);
         char c = waitKey(1);
         if (c > 0)
         {
@@ -87,6 +108,7 @@ int main(int argc, char** argv)
         }
     }
     cap.release();
+    ofs.close();
     cout << "FPS: " << num_frames * 1000000 / total_ms << endl;
 
     return 0;
