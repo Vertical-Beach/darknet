@@ -63,8 +63,9 @@ def bboxes_to_dic(bboxes):
         result_list[bbox.frame_id][category_name].append(bbox.to_bboxdic())
     return result_list
 
-def process(txt_file_path):
-    bboxes = Bbox.convert_line_to_bboxes(open(txt_file_path).readlines())
+def process(txt_file_path0, txt_file_path1):
+    bboxes = Bbox.convert_line_to_bboxes(open(txt_file_path0).readlines())
+    bboxes.extend(Bbox.convert_line_to_bboxes(open(txt_file_path1).readlines()))
     # 1. count number of tracked frames for each tracked id
     count_dic = count_tracked_frames(bboxes)
     # 2. remove bboxes whose tracked frame num is less than 3
@@ -74,15 +75,22 @@ def process(txt_file_path):
     return result_list
 
 def main(args):
-    txt_file_paths = glob.glob(os.path.join(args.result_dir, "test_*.txt"))
-    txt_file_paths = sorted(txt_file_paths)
-    print(len(txt_file_paths))
-    assert(len(txt_file_paths) == VIDEO_NUM)
+    txt_file_paths0 = glob.glob(os.path.join(args.result_dir, "./test_*_tracking_0.txt"))
+    txt_file_paths0 = sorted(txt_file_paths0)
+    txt_file_paths1 = glob.glob(os.path.join(args.result_dir, "./test_*_tracking_1.txt"))
+    txt_file_paths1 = sorted(txt_file_paths1)
+    assert(len(txt_file_paths0) == VIDEO_NUM)
+    assert(len(txt_file_paths1) == VIDEO_NUM)
 
     result_dic = {}
-    for txt_file_path in txt_file_paths:
-        video_name = os.path.basename(txt_file_path).replace(".txt", ".mp4")
-        result_dic[video_name] = process(txt_file_path)
+    for i in range(VIDEO_NUM):
+        txt_file_path0 = os.path.join(args.result_dir, f"./test_{str(i).zfill(2)}_tracking_0.txt")
+        txt_file_path1 = os.path.join(args.result_dir, f"./test_{str(i).zfill(2)}_tracking_1.txt")
+        print(txt_file_path0, txt_file_path1)
+        video_name = f"test_{str(i).zfill(2)}.mp4"
+        assert(os.path.exists(txt_file_path0))
+        assert(os.path.exists(txt_file_path1))
+        result_dic[video_name] = process(txt_file_path0, txt_file_path1)
 
     open(args.output_path, "w").write(json.dumps(result_dic))
     print("Done!")
