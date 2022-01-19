@@ -6,6 +6,7 @@
 #include <float.h>
 #include <stdio.h>
 #include <vector>
+#include <iostream>
 #include <fstream>
 #include <chrono>
 #include "BYTETracker.h"
@@ -25,11 +26,20 @@ Mat draw_detections(cv::Mat img, vector<vector<Object>> objects){
     }
     return img;
 }
+
+string my_basename(string path) {
+    string res = path.substr(path.find_last_of('/') + 1);
+    cout << res << endl;
+    res = res.substr(0, res.find_last_of('.'));
+    cout << res << endl;
+    return res;
+}
+
 int main(int argc, char** argv)
 {
-    if (argc != 3)
+    if (argc != 2)
     {
-        fprintf(stderr, "Usage: %s [videopath] [resultpath]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [videopath]\n", argv[0]);
         return -1;
     }
 
@@ -49,7 +59,16 @@ int main(int argc, char** argv)
 
     VideoWriter writer("demo.mp4", CV_FOURCC('m', 'p', '4', 'v'), fps, Size(img_w, img_h*2));
 
-    ofstream ofs(argv[2]);
+    vector<ofstream> detection_writers;
+    vector<ofstream> tracking_writers;
+    for(int i = 0; i < runner.class_num; i++){
+        string detection_result_path = (string)"./results/" + my_basename((string)argv[1]) + (string)"_detection_" + to_string(i) + (string)".txt";
+        string tracking_result_path = (string)"./results/" + my_basename((string)argv[1])  + (string)"_tracking_" + to_string(i) + (string)".txt";
+        detection_writers.push_back(ofstream(detection_result_path));
+        tracking_writers.push_back(ofstream(tracking_result_path));
+        cout << detection_result_path << endl;
+        cout << tracking_result_path << endl;
+    }
     Mat img;
     vector<BYTETracker> trackers(runner.class_num);
     for(int i = 0; i < runner.class_num; i++) trackers[i] = BYTETracker(fps, FPS);
@@ -72,6 +91,10 @@ int main(int argc, char** argv)
         img2 = draw_detections(img2, objects);
         for(int track_class = 0; track_class < runner.class_num; track_class++){
             auto class_objects = objects[track_class];
+            for(Object class_object: class_objects){
+                detection_writers[track_class] << num_frames-1 << " " <<  track_class << " " << class_object.prob << " ";
+                detection_writers[track_class] << class_object.rect.x << " " << class_object.rect.y << " " << class_object.rect.width << " " << class_object.rect.height << endl;
+            }
 
             auto start = chrono::system_clock::now();
             vector<STrack> output_stracks = trackers[track_class].update(class_objects);
@@ -88,7 +111,7 @@ int main(int argc, char** argv)
                     putText(img, format("%d", output_stracks[i].track_id), Point(tlwh[0], tlwh[1] - 5),
                             0, 0.6, Scalar(0, 0, 255), 2, LINE_AA);
                     rectangle(img, Rect(tlwh[0], tlwh[1], tlwh[2], tlwh[3]), s, 2);
-                    ofs << num_frames-1 << " " << output_stracks[i].track_id << " " << track_class << " " << tlwh[0] << " " << tlwh[1] << " " << tlwh[2] << " " << tlwh[3] << endl;
+                    tracking_writers[track_class] << num_frames-1 << " " << output_stracks[i].track_id << " " << track_class << " " << tlwh[0] << " " << tlwh[1] << " " << tlwh[2] << " " << tlwh[3] << endl;
                 }
             }
             putText(img, format("frame: %d fps: %d num: %d", num_frames, num_frames * 1000000 / total_ms, output_stracks.size()),
@@ -108,7 +131,8 @@ int main(int argc, char** argv)
         }
     }
     cap.release();
-    ofs.close();
+    for(int i = 0; i < runner.class_num; i++) detection_writers[i].close();
+    for(int i = 0; i < runner.class_num; i++) tracking_writers[i].close();
     cout << "FPS: " << num_frames * 1000000 / total_ms << endl;
 
     return 0;
