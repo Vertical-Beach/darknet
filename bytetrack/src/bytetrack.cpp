@@ -10,10 +10,15 @@
 #include <fstream>
 #include <chrono>
 #include "BYTETracker.h"
-#include "yolorunner.h"
 
+#ifdef DPU
+#include "yolorunner_dpu.h"
+#else
+#include "yolorunner.h"
 #define YOLOV4_NMS_THRESH  0.45 // nms threshold
 #define YOLOV4_CONF_THRESH 0.1 // threshold of bounding box prob
+#endif
+
 #define MIN_BOX_AREA 1024
 #define FPS 5
 
@@ -37,14 +42,16 @@ string my_basename(string path) {
 
 int main(int argc, char** argv)
 {
-    if (argc != 2)
+    if (argc != 4)
     {
-        fprintf(stderr, "Usage: %s [videopath]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [videopath] [modelconfig] [modelfile] \n", argv[0]);
         return -1;
     }
-
-    YoloRunner runner = YoloRunner("../yolov4_tiny/yolov4-tiny-custom.cfg", "../yolov4_tiny/yolov4-tiny-custom_best.weights", YOLOV4_NMS_THRESH, YOLOV4_CONF_THRESH);
-
+    #ifdef DPU
+    YoloRunner runner = YoloRunner(argv[2], argv[3]);
+    #else
+    YoloRunner runner = YoloRunner(argv[2], argv[3], YOLOV4_NMS_THRESH, YOLOV4_CONF_THRESH);
+    #endif
     const char* videopath = argv[1];
 
     VideoCapture cap(videopath);
@@ -57,7 +64,9 @@ int main(int argc, char** argv)
     long nFrame = static_cast<long>(cap.get(CV_CAP_PROP_FRAME_COUNT));
     cout << "Total frames: " << nFrame << endl;
 
+    #ifdef VIDEO_WRITE
     VideoWriter writer("demo.mp4", CV_FOURCC('m', 'p', '4', 'v'), fps, Size(img_w, img_h*2));
+    #endif
 
     vector<ofstream> detection_writers;
     vector<ofstream> tracking_writers;
@@ -74,17 +83,12 @@ int main(int argc, char** argv)
     for(int i = 0; i < runner.class_num; i++) trackers[i] = BYTETracker(fps, FPS);
     int num_frames = 0;
     int total_ms = 1;
-	for (;;)
+    for (;;)
     {
-        if(!cap.read(img))
-            break;
+        if(!cap.read(img)) break;
+        if (img.empty()) break;
         num_frames ++;
-        if (num_frames % 20 == 0)
-        {
-            cout << "Processing frame " << num_frames << " (" << num_frames * 1000000 / total_ms << " fps)" << endl;
-        }
-		if (img.empty())
-			break;
+        cout << "Processing frame " << num_frames << " (" << num_frames * 1000000 / total_ms << " fps)" << endl;
 
         vector<vector<Object>> objects = runner.Run(img);
         Mat img2 = img.clone();
@@ -103,14 +107,11 @@ int main(int argc, char** argv)
             for (int i = 0; i < output_stracks.size(); i++)
             {
                 vector<float> tlwh = output_stracks[i].tlwh;
-                // bool vertical = tlwh[2] / tlwh[3] > 1.6;
-                // if (tlwh[2] * tlwh[3] > 20 && !vertical)
                 float area = tlwh[2] * tlwh[3];
                 if (area > MIN_BOX_AREA){
                     Scalar s = trackers[track_class].get_color(output_stracks[i].track_id);
                     putText(img, format("%d", output_stracks[i].track_id), Point(tlwh[0], tlwh[1] - 5),
                             0, 0.6, Scalar(0, 0, 255), 2, LINE_AA);
-                    rectangle(img, Rect(tlwh[0], tlwh[1], tlwh[2], tlwh[3]), s, 2);
                     tracking_writers[track_class] << num_frames-1 << " " << output_stracks[i].track_id << " " << track_class << " " << tlwh[0] << " " << tlwh[1] << " " << tlwh[2] << " " << tlwh[3] << endl;
                 }
             }
@@ -123,12 +124,9 @@ int main(int argc, char** argv)
         Mat roi2(vstackimg,Rect(0, img.rows, img2.cols, img2.rows));
         img2.copyTo(roi2);
 
+        #ifdef VIDEO_WRITE
         writer.write(vstackimg);
-        char c = waitKey(1);
-        if (c > 0)
-        {
-            break;
-        }
+        #endif
     }
     cap.release();
     for(int i = 0; i < runner.class_num; i++) detection_writers[i].close();
